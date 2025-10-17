@@ -20,51 +20,59 @@ class PaymentController extends Controller
     // ====================== MEMBER SUBMIT (có thể kèm ảnh) ======================
 
     public function submit(Request $r, Classroom $class, Invoice $invoice): JsonResponse
-    {
-        ClassAccess::ensureMember($r->user(), $class);
-        abort_unless($invoice->cycle->class_id === $class->id, 404);
+{
+    ClassAccess::ensureMember($r->user(), $class);
+    abort_unless($invoice->cycle->class_id === $class->id, 404);
 
-        $member = ClassMember::where('class_id', $class->id)
-            ->where('user_id', $r->user()->id)->firstOrFail();
+    $member = ClassMember::where('class_id', $class->id)
+        ->where('user_id', $r->user()->id)->firstOrFail();
 
-        abort_unless($invoice->member_id === $member->id, 403, 'Không phải hóa đơn của bạn');
+    abort_unless($invoice->member_id === $member->id, 403, 'Không phải hóa đơn của bạn');
+    abort_unless(in_array($invoice->status, ['unpaid','submitted'], true), 422, 'Hóa đơn không ở trạng thái cho phép nộp.');
 
-        $data = $r->validate([
-            'amount'   => 'required|integer|min:0',
-            'method'   => 'sometimes|in:bank,momo,zalopay,cash',
-            'txn_ref'  => 'nullable|string|max:100',
-            // ảnh có thể gửi luôn trong submit
-            'image'    => 'nullable|image|max:4096',
-            'proof'    => 'nullable|image|max:4096',
-        ]);
-
-        $data['invoice_id'] = $invoice->id;
-        $data['payer_id']   = $member->id;
-        $data['status']     = 'submitted';
-        $data['method']     = $data['method'] ?? 'bank';
-
-        $pay = Payment::create($data);
-
-        // nếu kèm ảnh -> lưu ngay
-        $file = $r->file('image') ?: $r->file('proof');
-        if ($file) {
-            $path = $file->store('proofs', 'public');                // proofs/xxx.jpg
-            $pay->proof_path = asset('storage/'.$path);
-            $pay->status = $pay->status ?? 'submitted';
-            $pay->save();
-
-            // GỬI JOB
-            $abs = storage_path('app/public/'.$path);
-            Log::info("Dispatch OCR submit payment #{$pay->id} abs={$abs}");
-            ProcessPaymentProof::dispatch($pay->id, $abs)->onQueue('payments');
+    // quá hạn & allow_late
+    $cycle = $invoice->cycle;
+    if ($cycle && $cycle->due_date) {
+        $due = $cycle->due_date instanceof \Carbon\Carbon
+            ? $cycle->due_date->startOfDay()
+            : \Illuminate\Support\Carbon::parse($cycle->due_date)->startOfDay();
+        if (now()->startOfDay()->gt($due) && !$cycle->allow_late) {
+            return response()->json(['message' => 'Kỳ thu đã quá hạn và không cho phép nộp muộn.'], 422);
         }
-
-        if ($invoice->status === 'unpaid') {
-            $invoice->update(['status' => 'submitted']);
-        }
-
-        return response()->json(['payment' => $pay], 201);
     }
+
+    $data = $r->validate([
+        'amount'   => 'required|integer|min:0',
+        'method'   => 'sometimes|in:bank,momo,zalopay,cash',
+        'txn_ref'  => 'nullable|string|max:100',
+        'image'    => 'nullable|image|max:4096',
+        'proof'    => 'nullable|image|max:4096',
+    ]);
+
+    $data['invoice_id'] = $invoice->id;
+    $data['payer_id']   = $member->id;
+    $data['status']     = 'submitted';
+    $data['method']     = $data['method'] ?? 'bank';
+
+    $pay = Payment::create($data);
+
+    $file = $r->file('image') ?: $r->file('proof');
+    if ($file) {
+        $path = $file->store('proofs', 'public');
+        $pay->proof_path = asset('storage/'.$path);
+        $pay->save();
+
+        $abs = storage_path('app/public/'.$path);
+        Log::info("Dispatch OCR submit payment #{$pay->id} abs={$abs}");
+        ProcessPaymentProof::dispatch($pay->id, $abs)->onQueue('payments');
+    }
+
+    if ($invoice->status === 'unpaid') {
+        $invoice->update(['status' => 'submitted']);
+    }
+
+    return response()->json(['payment' => $pay], 201);
+}
 
     // ====================== MEMBER UPLOAD PROOF (multipart) ======================
 
@@ -375,5 +383,71 @@ class PaymentController extends Controller
     }
 
     return response()->json(['payments' => $q->get()]);
+}
+public function showApproved(Request $r, Classroom $class, \App\Models\Payment $payment): JsonResponse
+{
+    ClassAccess::ensureMember($r->user(), $class);
+    // thuộc đúng lớp?
+    abort_unless(optional($payment->invoice)->cycle?->class_id === $class->id, 404);
+
+    $payment->loadMissing(['invoice:id,fee_cycle_id,member_id', 'invoice.cycle:id,name']);
+    $member = ClassMember::find($payment->payer_id);
+
+    return response()->json([
+        'payment' => [
+            'id'          => $payment->id,
+            'status'      => $payment->status,
+            'amount'      => $payment->amount,
+            'method'      => $payment->method,
+            'note'        => $payment->note,
+            'txn_ref'     => $payment->txn_ref,
+            'proof_path'  => $payment->proof_path,
+            'approved_at' => $payment->approved_at ?? $payment->verified_at ?? $payment->created_at,
+            'invoice_id'  => $payment->invoice_id,
+            'cycle_name'  => optional($payment->invoice->cycle)->name,
+            'payer_name'  => $member?->user?->name ?? $member?->user?->email,
+        ]
+    ]);
+}
+
+public function destroyApproved(Request $r, Classroom $class, \App\Models\Payment $payment): JsonResponse
+{
+    ClassAccess::ensureTreasurerLike($r->user(), $class);
+
+    // Payment phải thuộc lớp này
+    $invoice = $payment->invoice()->with('cycle')->first();
+    abort_unless(optional($invoice?->cycle)->class_id === $class->id, 404, 'Không thuộc lớp này');
+
+    // Chỉ cho xóa phiếu đã duyệt/đã thu
+    abort_unless(in_array($payment->status, ['verified','paid'], true), 422, 'Chỉ xóa phiếu đã duyệt.');
+
+    DB::transaction(function () use ($payment) {
+        // Khóa invoice để cập nhật an toàn
+        $invoice = $payment->invoice()->lockForUpdate()->first();
+
+        // Xóa phiếu (hard delete; nếu bạn dùng SoftDeletes thì dùng $payment->delete(); vẫn ổn)
+        $payment->delete();
+
+        // Tính lại tổng verified sau khi xóa
+        $sumVerified   = $invoice->payments()->where('status', 'verified')->sum('amount');
+        $hasSubmitted  = $invoice->payments()->where('status', 'submitted')->exists();
+
+        // Nếu không còn verified nào -> trả trạng thái về submitted/unpaid
+        if ($sumVerified <= 0) {
+            $invoice->status  = $hasSubmitted ? 'submitted' : 'unpaid';
+            $invoice->paid_at = null;
+        } else {
+            // Còn verified nhưng chưa đủ số tiền -> chắc chắn không thể là 'paid'
+            if ($sumVerified < (int) $invoice->amount && $invoice->status === 'paid') {
+                $invoice->status  = $hasSubmitted ? 'submitted' : 'unpaid';
+                $invoice->paid_at = null;
+            }
+        }
+
+        $invoice->save();
+    });
+
+    // Không cần cập nhật "sổ quỹ" riêng: báo cáo/số dư đọc trực tiếp từ payments/expenses
+    return response()->json(['ok' => true]);
 }
 }

@@ -60,7 +60,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/classes/{class}/payments/{payment}', [PaymentController::class,'show']);
     Route::post('/classes/{class}/payments/{payment}/verify', [PaymentController::class,'verify']);
 
-
+    // xoá payment đã duyệt
+    Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/classes/{class}/payments/{payment}', [PaymentController::class, 'showApproved']);
+    Route::delete('/classes/{class}/payments/{payment}', [PaymentController::class, 'destroyApproved']);
+    });
 
     // Expense Requests & Expenses
     Route::get('/classes/{class}/expense-requests', [ExpenseRequestController::class,'index']);
@@ -79,11 +83,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Upload hóa đơn/biên nhận ảnh cho expense
     Route::post('/classes/{class}/expenses/{expense}/receipt', [ExpenseController::class, 'uploadReceipt']);
 });
+    Route::get('/classes/{class}/fee-cycles/{cycle}/unpaid-members', [InvoiceController::class, 'unpaidMembers']);
+    });
 
-    // Reports
-    Route::get('/classes/{class}/fee-cycles/{cycle}/report', [ReportController::class,'cycleSummary']);
-    Route::get('/classes/{class}/balance',                 [ReportController::class,'classBalance']);
-});
 Route::get('/__debug/enqueue', function () {
     dispatch(function () { Log::warning('DEBUG queued closure fired'); })
         ->onQueue('payments');
