@@ -27,7 +27,7 @@ class FeeCycleController extends Controller
 
     public function store(Request $r, Classroom $class)
     {
-        ClassAccess::ensureOwner($r->user(), $class);
+        ClassAccess::ensureTreasurerLike($r->user(), $class);
 
         $data = $r->validate([
             'name' => 'required|string',
@@ -130,7 +130,7 @@ class FeeCycleController extends Controller
 
     public function updateStatus(Request $r, Classroom $class, FeeCycle $cycle)
     {
-        ClassAccess::ensureOwner($r->user(), $class);
+        ClassAccess::ensureTreasurerLike($r->user(), $class);
         abort_unless($cycle->class_id === $class->id, 404);
 
         $r->validate(['status'=>'required|in:draft,active,closed']);
