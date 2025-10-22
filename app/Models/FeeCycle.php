@@ -6,8 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class FeeCycle extends Model
 {
-    protected $fillable = ['class_id','name','term','amount_per_member','due_date','status'];
-
+    protected $fillable = ['class_id','name','term','amount_per_member','due_date','status','allow_late'];
+    protected $casts = ['due_date'=>'date','allow_late'=>'boolean'];
     public function classRoom() { return $this->belongsTo(Classroom::class, 'class_id'); }
     public function invoices() { return $this->hasMany(Invoice::class, 'fee_cycle_id'); }
 }
