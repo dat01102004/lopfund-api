@@ -24,8 +24,8 @@ class ProcessPaymentProof implements ShouldQueue
 
     public function __construct(int $paymentId, ?string $absoluteImagePath = null)
     {
-        $this->paymentId        = $paymentId;
-        $this->absoluteImagePath= $absoluteImagePath;
+        $this->paymentId         = $paymentId;
+        $this->absoluteImagePath = $absoluteImagePath;
 
         // ép job đi vào hàng "payments" (cách an toàn, không đụng trait)
         $this->onQueue('payments');
@@ -72,12 +72,14 @@ class ProcessPaymentProof implements ShouldQueue
                 return;
             }
 
+            // ✅ Lưu đầy đủ trường OCR (đã thêm ocr_note)
             $this->saveCols($payment, [
                 'ocr_raw'        => $res['raw_text'] ?? null,
                 'ocr_amount'     => $res['amount'] ?? null,
                 'ocr_txn_ref'    => $res['txn_ref'] ?? null,
                 'ocr_method'     => $res['method'] ?? null,
                 'ocr_confidence' => $res['confidence'] ?? null,
+                'ocr_note'       => $res['note'] ?? null,          // ✅ NEW
             ]);
 
             if (!($res['ok'] ?? false)) {
@@ -86,12 +88,13 @@ class ProcessPaymentProof implements ShouldQueue
                 return;
             }
 
+            // ✅ Truyền đúng "note" thay vì raw_text vào auto verifier
             $decision = $verifier->decide($payment, [
                 'amount'        => $res['amount'] ?? null,
                 'txn_ref'       => $res['txn_ref'] ?? null,
                 'method'        => $res['method'] ?? null,
                 'payee_account' => $res['payee_account'] ?? null,
-                'note'          => $res['raw_text'] ?? null,
+                'note'          => $res['note'] ?? null,           // ✅ dùng nội dung CK đã tách
             ], $fund);
 
             Log::info("[OCR] decision: ".json_encode($decision));
@@ -105,9 +108,9 @@ class ProcessPaymentProof implements ShouldQueue
             }
         } catch (\Throwable $e) {
             Log::error("[OCR] job crashed: ".$e->getMessage(), ['trace'=>$e->getTraceAsString()]);
-            // optional: đánh dấu payment là rejected để không kẹt
+            // optional: đánh dấu trạng thái nếu muốn không kẹt hàng đợi
             // $this->rejectWith(Payment::find($this->paymentId), 'JOB_CRASH', $e->getMessage());
-            throw $e; // vẫn để failed_jobs ghi lại
+            throw $e; // để failed_jobs ghi lại phục vụ debug
         }
     }
 
@@ -141,7 +144,7 @@ class ProcessPaymentProof implements ShouldQueue
                 'auto_verified'        => true,
                 'verify_reason_code'   => $code,
                 'verify_reason_detail' => $detail,
-                'verified_by'          => null,
+                'verified_by'          => null,        // auto
                 'verified_at'          => Carbon::now(),
             ]);
             $p->refresh();
@@ -158,20 +161,21 @@ class ProcessPaymentProof implements ShouldQueue
 
     private function rejectWith(Payment $p, string $code, ?string $detail): void
     {
-    $this->saveCols($p, [
-        'status'               => $p->status === 'submitted' ? 'submitted' : $p->status,
-        'auto_verified'        => true,             // đã xử lý tự động
-        'verify_reason_code'   => $code,            // ví dụ: OCR_EMPTY, AMOUNT_MISMATCH...
-        'verify_reason_detail' => $detail,
-        'verified_by'          => null,
-        'verified_at'          => null,
-    ]);
-}
+        // Giữ nguyên trạng thái 'submitted' nếu đã nộp; chỉ đánh dấu đã qua auto verify
+        $this->saveCols($p, [
+            'status'               => in_array($p->status, ['pending','submitted'], true) ? $p->status : $p->status,
+            'auto_verified'        => true,
+            'verify_reason_code'   => $code,            // ví dụ: OCR_EMPTY, NOTE_MISMATCH...
+            'verify_reason_detail' => $detail,
+            'verified_by'          => null,
+            'verified_at'          => null,
+        ]);
+    }
 
     private function notifyTreasurer(Payment $p, bool $ok): void
     {
         try {
-            $cycle = $p->invoice->cycle ?? $p->invoice->feeCycle ?? null;
+            $cycle   = $p->invoice->cycle ?? $p->invoice->feeCycle ?? null;
             $classId = $cycle?->class_id;
             if (!$classId || !Schema::hasTable('notifications')) return;
 
@@ -200,21 +204,22 @@ class ProcessPaymentProof implements ShouldQueue
 
     private function saveCols(Payment $p, array $data): void
     {
-    $table = $p->getTable();
-    $filtered = [];
+        $table    = $p->getTable();
+        $filtered = [];
 
-    foreach ($data as $col => $val) {
-        try {
-            if (Schema::hasColumn($table, $col)) {
+        foreach ($data as $col => $val) {
+            try {
+                if (Schema::hasColumn($table, $col)) {
+                    $filtered[$col] = $val;
+                }
+            } catch (\Throwable $e) {
+                // trong trường hợp hasColumn lỗi, vẫn fill tạm (an toàn nếu cột tồn tại)
                 $filtered[$col] = $val;
             }
-        } catch (\Throwable $e) {
-            $filtered[$col] = $val;
+        }
+
+        if (!empty($filtered)) {
+            $p->forceFill($filtered)->save();   // dùng forceFill để bỏ qua fillable
         }
     }
-
-    if (!empty($filtered)) {
-        $p->forceFill($filtered)->save();   // <— dùng forceFill thay vì fill
-    }
-}
 }

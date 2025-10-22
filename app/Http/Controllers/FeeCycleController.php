@@ -12,35 +12,51 @@ use App\Models\Notification;
 
 class FeeCycleController extends Controller
 {
-    // LIST cycles — client: GET /classes/{class}/fee-cycles
+    // ================= LIST cycles =================
+    // GET /classes/{class}/fee-cycles
     public function index(Request $r, Classroom $class)
     {
         ClassAccess::ensureMember($r->user(), $class);
 
         $cycles = FeeCycle::where('class_id', $class->id)
             ->orderByDesc('created_at')
-            ->get(['id','name','term','amount_per_member','due_date','status','created_at']);
+            ->get([
+                'id',
+                'name',
+                'term',
+                'amount_per_member',
+                'due_date',
+                'status',
+                'allow_late',     // 👈 thêm
+                'created_at',
+            ]);
 
         // Flutter đang List<Map>.from(res.data) ⇒ trả mảng raw
         return response()->json($cycles);
     }
 
+    // ================= CREATE cycle =================
+    // POST /classes/{class}/fee-cycles
     public function store(Request $r, Classroom $class)
     {
+        // Owner hoặc Thủ quỹ đều được
         ClassAccess::ensureTreasurerLike($r->user(), $class);
 
         $data = $r->validate([
-            'name' => 'required|string',
-            'term' => 'nullable|string',
-            'amount_per_member' => 'required|integer|min:0',
-            'due_date' => 'nullable|date',
-            'status' => 'sometimes|in:draft,active,closed'
+            'name'               => 'required|string',
+            'term'               => 'nullable|string',
+            'amount_per_member'  => 'required|integer|min:0',
+            'due_date'           => 'nullable|date',
+            'status'             => 'sometimes|in:draft,active,closed',
+            'allow_late'         => 'sometimes|boolean', // 👈 nhận allow_late
         ]);
-        $data['class_id'] = $class->id;
+        $data['class_id']   = $class->id;
+        $data['allow_late'] = (bool)($data['allow_late'] ?? true); // mặc định cho phép
 
         $cycle = FeeCycle::create($data);
 
-        $members = $class->members()->where('status','active')->pluck('user_id');
+        // Tạo thông báo mở kỳ cho các thành viên đang active
+        $members = $class->members()->where('status', 'active')->pluck('user_id');
         foreach ($members as $uid) {
             Notification::create([
                 'user_id'  => $uid,
@@ -51,55 +67,55 @@ class FeeCycleController extends Controller
                 'sent_at'  => now(),
             ]);
         }
+
         return response()->json($cycle, 201);
     }
 
-   public function generateInvoices(Request $r, Classroom $class, FeeCycle $cycle)
-{
-    $member = ClassMember::where('class_id', $class->id)
-        ->where('user_id', $r->user()->id)->first();
+    // =============== Generate invoices cho 1 kỳ ===============
+    // POST /classes/{class}/fee-cycles/{cycle}/generate
+    public function generateInvoices(Request $r, Classroom $class, FeeCycle $cycle)
+    {
+        $member = ClassMember::where('class_id', $class->id)
+            ->where('user_id', $r->user()->id)->first();
 
-    abort_unless($member && in_array($member->role, ['owner','treasurer']), 403);
-    abort_unless($cycle->class_id === $class->id, 404);
+        abort_unless($member && in_array($member->role, ['owner','treasurer']), 403);
+        abort_unless($cycle->class_id === $class->id, 404);
 
-    $amount = (int) $r->input('amount_per_member', $cycle->amount_per_member);
+        $amount = (int) $r->input('amount_per_member', $cycle->amount_per_member);
 
-    $activeMembers = ClassMember::where('class_id', $class->id)
-        ->where('status', 'active')->pluck('id');
+        $activeMembers = ClassMember::where('class_id', $class->id)
+            ->where('status', 'active')->pluck('id');
 
-    $created = 0; $skipped = 0;
+        $created = 0; $skipped = 0;
 
-    foreach ($activeMembers as $memberId) {
-        $invoice = Invoice::firstOrCreate(
-            [
-                'fee_cycle_id' => $cycle->id,
-                'member_id'    => $memberId,
-            ],
-            [
-                'title'  => $cycle->name,
-                'amount' => $amount,
-                'status' => 'unpaid',
-            ]
-        );
+        foreach ($activeMembers as $memberId) {
+            $invoice = Invoice::firstOrCreate(
+                [
+                    'fee_cycle_id' => $cycle->id,
+                    'member_id'    => $memberId,
+                ],
+                [
+                    'title'  => $cycle->name,
+                    'amount' => $amount,
+                    'status' => 'unpaid',
+                ]
+            );
 
-        if ($invoice->wasRecentlyCreated) {
-            $created++;
-        } else {
-            $skipped++;
+            if ($invoice->wasRecentlyCreated) $created++;
+            else $skipped++;
         }
+
+        return response()->json([
+            'cycle_id'          => $cycle->id,
+            'amount_per_member' => $amount,
+            'created'           => $created,
+            'skipped'           => $skipped,
+            'total_members'     => $activeMembers->count(),
+        ]);
     }
 
-    return response()->json([
-        'cycle_id'          => $cycle->id,
-        'amount_per_member' => $amount,
-        'created'           => $created,
-        'skipped'           => $skipped,
-        'total_members'     => $activeMembers->count(),
-    ]);
-}
-
-
-    // Report — client: GET /classes/{class}/fee-cycles/{cycle}/report
+    // ================= Report 1 kỳ =================
+    // GET /classes/{class}/fee-cycles/{cycle}/report
     public function report(Request $r, Classroom $class, FeeCycle $cycle)
     {
         ClassAccess::ensureMember($r->user(), $class);
@@ -117,24 +133,37 @@ class FeeCycleController extends Controller
 
         return response()->json([
             'cycle' => [
-                'id' => $cycle->id,
-                'name' => $cycle->name,
-                'term' => $cycle->term,
-                'amount_per_member' => $cycle->amount_per_member,
-                'due_date' => $cycle->due_date,
-                'status' => $cycle->status,
+                'id'                 => $cycle->id,
+                'name'               => $cycle->name,
+                'term'               => $cycle->term,
+                'amount_per_member'  => $cycle->amount_per_member,
+                'due_date'           => $cycle->due_date,
+                'status'             => $cycle->status,
+                'allow_late'         => (bool)$cycle->allow_late, // 👈 trả ra
             ],
             'summary' => $summary,
         ]);
     }
 
+    // ============== Update trạng thái (và allow_late) ==============
+    // PATCH /classes/{class}/fee-cycles/{cycle}/status
     public function updateStatus(Request $r, Classroom $class, FeeCycle $cycle)
     {
         ClassAccess::ensureTreasurerLike($r->user(), $class);
         abort_unless($cycle->class_id === $class->id, 404);
 
-        $r->validate(['status'=>'required|in:draft,active,closed']);
-        $cycle->update(['status'=>$r->status]);
+        $data = $r->validate([
+            'status'     => 'required|in:draft,active,closed',
+            'allow_late' => 'sometimes|boolean', // 👈 cho phép cập nhật nhanh
+        ]);
+
+        $payload = ['status' => $data['status']];
+        if ($r->has('allow_late')) {
+            $payload['allow_late'] = (bool)$data['allow_late'];
+        }
+
+        $cycle->update($payload);
+
         return response()->json($cycle);
     }
 }

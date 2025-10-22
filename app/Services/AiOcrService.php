@@ -67,6 +67,27 @@ class AiOcrService
         if (preg_match('/(CK|CT|TXN|REF)[\s\-\:]*([A-Z0-9\-]{4,})/i', $raw, $mm)) {
             $txnRef = strtoupper($mm[2]);
         }
+        $note = null;
+        $lower = mb_strtolower($raw, 'UTF-8');
+
+        // 1) Bắt theo nhãn tiếng Việt phổ biến
+        if (preg_match('/n(ô|o)i\s*dung(?:\s*ck)?\s*[:\-]\s*(.+)/ui', $lower, $m)) {
+            $note = trim($m[2]);
+        }
+        // 2) Nhãn tiếng Anh ngân hàng: "description", "content", "reference"
+        elseif (preg_match('/(description|content|reference|ref\.?)\s*[:\-]\s*(.+)/ui', $lower, $m)) {
+            $note = trim($m[2]);
+        }
+        // 3) Phương án fallback: lấy dòng gần cụm “chuyển khoản/transfer”
+        if (!$note) {
+            $lines = preg_split('/\R/u', $lower);
+            foreach ($lines as $i => $line) {
+                if (preg_match('/(chuy[eê]n\s*kho[ảa]n|transfer|ckt|ck)/ui', $line)) {
+                    $note = trim($lines[$i+1] ?? '');
+                    break;
+                }
+            }
+        }
 
         // Date rất khó, tạm để null hoặc tự thêm regex khi cần
         return [
@@ -76,6 +97,7 @@ class AiOcrService
             'date' => null,
             'method' => $method,
             'txn_ref' => $txnRef,
+            'note'       => $note,
             'confidence' => null,
         ];
     }

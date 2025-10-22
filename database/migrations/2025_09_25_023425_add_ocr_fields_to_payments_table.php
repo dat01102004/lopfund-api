@@ -17,6 +17,7 @@ return new class extends Migration {
       $t->boolean('auto_verified')->default(false);
       $t->string('verify_reason_code', 64)->nullable();   // ex: MATCH_OK, AMOUNT_MISMATCH, PAYEE_MISMATCH, NO_TXN_REF, OCR_EMPTY...
       $t->text('verify_reason_detail')->nullable();       // log chi tiết rules
+      $t->text('ocr_note')->nullable();
       // đã có: verified_by, verified_at, status (pending/verified/rejected/…)
     });
   }

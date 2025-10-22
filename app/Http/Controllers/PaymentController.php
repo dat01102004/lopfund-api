@@ -1,4 +1,4 @@
-<?php
+<?php // app\Http\Controllers\PaymentController.php
 
 namespace App\Http\Controllers;
 
