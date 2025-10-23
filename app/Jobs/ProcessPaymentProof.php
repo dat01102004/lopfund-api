@@ -79,7 +79,6 @@ class ProcessPaymentProof implements ShouldQueue
                 'ocr_txn_ref'    => $res['txn_ref'] ?? null,
                 'ocr_method'     => $res['method'] ?? null,
                 'ocr_confidence' => $res['confidence'] ?? null,
-                'ocr_note'       => $res['note'] ?? null,          // ✅ NEW
             ]);
 
             if (!($res['ok'] ?? false)) {
@@ -94,7 +93,6 @@ class ProcessPaymentProof implements ShouldQueue
                 'txn_ref'       => $res['txn_ref'] ?? null,
                 'method'        => $res['method'] ?? null,
                 'payee_account' => $res['payee_account'] ?? null,
-                'note'          => $res['note'] ?? null,           // ✅ dùng nội dung CK đã tách
             ], $fund);
 
             Log::info("[OCR] decision: ".json_encode($decision));

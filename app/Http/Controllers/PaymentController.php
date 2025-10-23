@@ -14,7 +14,6 @@ use App\Support\ClassAccess;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use App\Jobs\ProcessPaymentProof;
 
-
 class PaymentController extends Controller
 {
     // ====================== MEMBER SUBMIT (có thể kèm ảnh) ======================
