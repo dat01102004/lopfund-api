@@ -59,6 +59,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/classes/{class}/payments', [PaymentController::class,'index']);
     Route::get('/classes/{class}/payments/{payment}', [PaymentController::class,'show']);
     Route::post('/classes/{class}/payments/{payment}/verify', [PaymentController::class,'verify']);
+    //phiếu không hợp lệ
+    Route::post('/classes/{class}/payments/{payment}/invalidate', [PaymentController::class,'invalidate']);
+    Route::get('/classes/{class}/payments/invalid', [PaymentController::class, 'invalidList']);
+
 
     // xoá payment đã duyệt
     Route::middleware('auth:sanctum')->group(function () {
